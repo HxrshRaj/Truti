@@ -1,0 +1,46 @@
+# Render Blueprint. NOT yet applied/verified: needs a Render account and a GitHub remote.
+databases:
+  - name: truti-db
+    plan: free
+
+services:
+  - type: keyvalue
+    name: truti-redis
+    plan: free
+    ipAllowList: []
+
+  - type: web
+    name: truti-ingest
+    runtime: docker
+    dockerContext: ./ingest
+    dockerfilePath: ./ingest/Dockerfile
+    healthCheckPath: /healthz
+    envVars: &env
+      - { key: DATABASE_URL, fromDatabase: { name: truti-db, property: connectionString } }
+      - { key: REDIS_URL, fromService: { type: keyvalue, name: truti-redis, property: connectionString } }
+      - { key: ADMIN_TOKEN, generateValue: true }
+      - { key: CORS_ORIGINS, value: "*" }
+
+  - type: worker
+    name: truti-worker
+    runtime: docker
+    dockerContext: ./ingest
+    dockerfilePath: ./ingest/Dockerfile
+    dockerCommand: python -m truti_ingest.worker
+    envVars: *env
+
+  - type: web
+    name: truti-web
+    runtime: static
+    rootDir: web
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    routes:
+      - { type: rewrite, source: /*, destination: /index.html }
+
+  - type: web
+    name: truti-demo
+    runtime: static
+    rootDir: demo/browser
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist

@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Truti browser demo</title>
+  <style>body{font:15px system-ui;max-width:640px;margin:40px auto;padding:0 16px}input{width:100%;padding:6px}button{margin:4px 4px 4px 0;padding:8px 12px}</style>
+</head>
+<body>
+  <h1>Truti browser demo</h1>
+  <p>Paste a DSN (from the dashboard's “Projects &amp; DSN”), then break things. The page loads a <b>minified</b> bundle, so stack frames only become readable if you uploaded its source map (<code>demo/upload_sourcemap.py</code>).</p>
+  <label>DSN <input id="dsn" placeholder="https://&lt;key&gt;@your-ingest.onrender.com/1" /></label>
+  <p>
+    <button data-action="type-error">Throw TypeError</button>
+    <button data-action="syntax-error">Throw SyntaxError</button>
+    <button data-action="rejection">Unhandled rejection</button>
+    <button data-action="message">Send message</button>
+  </p>
+  <p id="status" aria-live="polite"></p>
+  <script src="app.min.js"></script>
+</body>
+</html>
