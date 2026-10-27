@@ -1,0 +1,16 @@
+== batch 1
+duration_s        20.2
+connections       8 proc x 4 = 32  batch 1
+requests          10716  (531 req/s)
+events accepted   10716  (531 events/s)
+latency ms        p50 52.1  p95 101.5  p99 250.5  mean 59.6
+status counts     {202: 10716}
+drop rate         0.00%  (0 of 10716 events not accepted)
+== batch 10
+duration_s        20.2
+connections       8 proc x 4 = 32  batch 10
+requests          9017  (446 req/s)
+events accepted   48680  (2408 events/s)
+latency ms        p50 67.7  p95 136.7  p99 174.4  mean 70.7
+status counts     {202: 4868, 503: 4149}
+drop rate         46.01%  (41490 of 90170 events not accepted)
