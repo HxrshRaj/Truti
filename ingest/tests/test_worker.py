@@ -205,3 +205,18 @@ def test_email_alert_failure_is_logged_not_raised(env, monkeypatch):
     assert issues(env)[0].count == 1
     log = env.api("GET", f"/projects/{env.pid}/alerts").json()[0]
     assert log["delivered"] is False and "SMTP_HOST" in log["detail"]
+
+
+def test_embedded_worker_processes_events_without_a_separate_process():
+    import time
+    from conftest import Env
+    e = Env(embed_worker=True)
+    with e.client:  # runs the app lifespan, which starts the worker thread
+        assert e.send(make_event(), make_event()).status_code == 202
+        for _ in range(100):
+            with e.Session() as s:
+                n = s.scalar(select(Issue.count))
+            if n == 2:
+                break
+            time.sleep(0.1)
+        assert n == 2

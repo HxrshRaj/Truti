@@ -148,7 +148,9 @@ What this says, honestly:
 
 Compared with real Sentry, and as a project:
 
-* **Not deployed.** `render.yaml` (web, ingest, worker, Postgres, Redis, demo) has not been applied, so
+* **Not deployed.** The blueprint is sized for Render's free tier by running the worker inside the ingest
+  service (`EMBED_WORKER=1`; there is no free background-worker plan). Free web services sleep when idle and the
+  free Postgres expires after 30 days, so it is a demo setup, not a production one. `render.yaml` (web, ingest, worker, Postgres, Redis, demo) has not been applied, so
   there are no live URLs and the free-tier behaviour is unknown. Email alerts were tested with a fake SMTP server only; no real mail server was used.
 * Auth is deliberately basic: email + password, no email verification, password reset, SSO or 2FA; the
   login throttle is in-process (per replica); sessions last 14 days and there is no session list. Two roles only.

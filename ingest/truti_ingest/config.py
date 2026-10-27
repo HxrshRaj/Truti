@@ -20,6 +20,7 @@ class Settings:
     dead_stream: str = "truti:dead"
     group: str = "workers"
     retention_days: int = field(default_factory=lambda: _int("RETENTION_DAYS", 30))  # 0 disables pruning
+    embed_worker: bool = field(default_factory=lambda: os.environ.get("EMBED_WORKER", "0") == "1")
     allow_registration: bool = field(default_factory=lambda: os.environ.get("ALLOW_REGISTRATION", "0") == "1")
     cors_origins: str = field(default_factory=lambda: os.environ.get("CORS_ORIGINS", "*"))
     metrics_port: int = field(default_factory=lambda: _int("WORKER_METRICS_PORT", 9100))
