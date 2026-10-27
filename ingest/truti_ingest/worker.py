@@ -133,17 +133,14 @@ def prune(Session, days, now=None):
     return ev_total, res.rowcount or 0
 
 
-def main():
-    logging.basicConfig(level=logging.INFO)
-    s = Settings()
-    r = redis.Redis.from_url(s.redis_url, decode_responses=True)
-    Session = make_session_factory(s.database_url, use_migrations=True)
+def run_forever(s, r, Session, stop=None, consumer=None):
+    """The worker loop. ``stop`` (a threading.Event) lets the API process run it as a background
+    thread (EMBED_WORKER=1) so the whole service fits on one web instance."""
     ensure_group(r, s)
-    start_http_server(s.metrics_port, registry=m.REGISTRY)
-    consumer = f"{socket.gethostname()}-{os.getpid()}"
+    consumer = consumer or f"{socket.gethostname()}-{os.getpid()}"
     log.info("worker %s started", consumer)
     last_prune = 0.0
-    while True:
+    while not (stop and stop.is_set()):
         try:
             if time.time() - last_prune > 3600:
                 last_prune = time.time()
@@ -155,6 +152,18 @@ def main():
         except redis.ConnectionError:
             log.warning("redis unavailable; retrying")
             time.sleep(1)
+        except Exception:
+            log.exception("worker loop error; continuing")
+            time.sleep(1)
+
+
+def main():
+    logging.basicConfig(level=logging.INFO)
+    s = Settings()
+    r = redis.Redis.from_url(s.redis_url, decode_responses=True)
+    Session = make_session_factory(s.database_url, use_migrations=True)
+    start_http_server(s.metrics_port, registry=m.REGISTRY)
+    run_forever(s, r, Session)
 
 
 if __name__ == "__main__":

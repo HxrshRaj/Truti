@@ -1,4 +1,6 @@
-# Render Blueprint. NOT yet applied/verified: needs a Render account and a GitHub remote.
+# Render Blueprint, sized for Render's free tier (no payment method should be needed; check their current pricing).
+# Free-tier caveats: web services sleep after ~15 min idle (first request is slow; the SDKs retry), and the free
+# Postgres expires after 30 days. NOT yet applied/verified by me.
 databases:
   - name: truti-db
     plan: free
@@ -12,24 +14,19 @@ services:
   - type: web
     name: truti-ingest
     runtime: docker
+    plan: free
     dockerContext: ./ingest
     dockerfilePath: ./ingest/Dockerfile
     healthCheckPath: /healthz
-    envVars: &env
+    envVars:
       - { key: DATABASE_URL, fromDatabase: { name: truti-db, property: connectionString } }
       - { key: REDIS_URL, fromService: { type: keyvalue, name: truti-redis, property: connectionString } }
       - { key: ADMIN_TOKEN, generateValue: true }
       - { key: CORS_ORIGINS, value: "*" }
       - { key: ALLOW_REGISTRATION, value: "0" }   # first account becomes admin; then registration closes
       - { key: RETENTION_DAYS, value: "30" }
-
-  - type: worker
-    name: truti-worker
-    runtime: docker
-    dockerContext: ./ingest
-    dockerfilePath: ./ingest/Dockerfile
-    dockerCommand: python -m truti_ingest.worker
-    envVars: *env
+      - { key: EMBED_WORKER, value: "1" }   # no free background-worker tier: the API process also consumes the stream
+      - { key: WEB_CONCURRENCY, value: "1" }  # free instances have 512 MB
 
   - type: web
     name: truti-web

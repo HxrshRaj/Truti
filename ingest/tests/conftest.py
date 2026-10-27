@@ -39,7 +39,7 @@ class Env:
         self.sync_redis = fakeredis.FakeRedis(server=self.server, decode_responses=True)
         self.async_redis = fakeredis.FakeAsyncRedis(server=self.server, decode_responses=True)
         self.Session = make_session_factory("sqlite://")
-        self.app = create_app(self.settings, self.async_redis, self.Session)
+        self.app = create_app(self.settings, self.async_redis, self.Session, worker_redis=self.sync_redis)
         self.client = TestClient(self.app)
         ensure_group(self.sync_redis, self.settings)
         with self.Session() as s:

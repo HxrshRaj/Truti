@@ -1,7 +1,9 @@
 """Ingest HTTP service: envelope endpoint + metrics + dashboard API."""
 import json
+import threading
 import time
 import zlib
+from contextlib import asynccontextmanager
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI, Request
@@ -28,11 +30,25 @@ def _err(status, msg, details=None, headers=None):
     return JSONResponse(body, status_code=status, headers=headers)
 
 
-def create_app(settings: Settings | None = None, redis_client=None, session_factory=None) -> FastAPI:
+def create_app(settings: Settings | None = None, redis_client=None, session_factory=None, worker_redis=None) -> FastAPI:
     s = settings or Settings()
     Session = session_factory or make_session_factory(s.database_url, use_migrations=True)
     r = redis_client or aioredis.Redis.from_url(s.redis_url, decode_responses=True)
-    app = FastAPI(title="Truti ingest")
+    @asynccontextmanager
+    async def lifespan(_app):
+        stop, thread = threading.Event(), None
+        if s.embed_worker:  # free-tier mode: consume the stream inside this process
+            import redis as sync_redis
+            from .worker import run_forever
+            wr = worker_redis or sync_redis.Redis.from_url(s.redis_url, decode_responses=True)
+            thread = threading.Thread(target=run_forever, args=(s, wr, Session, stop), name="truti-worker", daemon=True)
+            thread.start()
+        yield
+        stop.set()
+        if thread:
+            thread.join(timeout=5)
+
+    app = FastAPI(title="Truti ingest", lifespan=lifespan)
     app.add_middleware(CORSMiddleware, allow_origins=s.cors_origins.split(","), allow_methods=["*"],
                        allow_headers=["*"], expose_headers=["Retry-After"])
     cache: dict[int, tuple[float, str, int | None]] = {}
