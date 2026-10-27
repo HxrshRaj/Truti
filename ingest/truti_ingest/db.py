@@ -53,6 +53,16 @@ class Issue(Base):
                       Index("ix_issue_project_last_seen", "project_id", "last_seen"))
 
 
+class FingerprintAlias(Base):
+    """After issues are merged, the merged-away fingerprint keeps resolving to the surviving issue."""
+    __tablename__ = "fingerprint_aliases"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    fingerprint: Mapped[str] = mapped_column(String(40))
+    issue_id: Mapped[int] = mapped_column(ForeignKey("issues.id"), index=True)
+    __table_args__ = (UniqueConstraint("project_id", "fingerprint"),)
+
+
 class Event(Base):
     __tablename__ = "events"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -83,7 +93,9 @@ class AlertRule(Base):
     kind: Mapped[str] = mapped_column(String(20))  # new_issue | spike
     threshold: Mapped[int] = mapped_column(Integer, default=10)
     window_seconds: Mapped[int] = mapped_column(Integer, default=60)
-    webhook_url: Mapped[str] = mapped_column(Text)
+    channel: Mapped[str] = mapped_column(String(10), default="webhook")  # webhook | email
+    webhook_url: Mapped[str] = mapped_column(Text, default="")
+    email_to: Mapped[str | None] = mapped_column(String(320), nullable=True)
     last_fired: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -97,7 +109,57 @@ class AlertLog(Base):
     detail: Mapped[str] = mapped_column(Text, default="")
 
 
-def make_session_factory(url: str):
+class User(Base):
+    __tablename__ = "users"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    email: Mapped[str] = mapped_column(String(320), unique=True)
+    password_hash: Mapped[str] = mapped_column(String(300))
+    is_admin: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)  # sha256 of the bearer token
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
+
+
+class Membership(Base):
+    __tablename__ = "memberships"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    role: Mapped[str] = mapped_column(String(10), default="member")  # owner | member
+    __table_args__ = (UniqueConstraint("user_id", "project_id"),)
+
+
+def migrate(engine):
+    """Bring the schema to the latest Alembic revision. A Postgres advisory lock serialises
+    concurrent starts (api replicas + worker all call this on boot)."""
+    import os
+
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import text
+
+    cfg = Config()
+    cfg.set_main_option("script_location", os.path.join(os.path.dirname(__file__), "migrations"))
+    with engine.connect() as conn:
+        if conn.dialect.name == "postgresql":
+            conn.execute(text("SELECT pg_advisory_lock(727001)"))
+        try:
+            cfg.attributes["connection"] = conn
+            command.upgrade(cfg, "head")
+            conn.commit()
+        finally:
+            if conn.dialect.name == "postgresql":
+                conn.execute(text("SELECT pg_advisory_unlock(727001)"))
+                conn.commit()
+
+
+def make_session_factory(url: str, use_migrations: bool = False):
     kw = {}
     if url.startswith("sqlite"):
         kw["connect_args"] = {"check_same_thread": False}
@@ -107,5 +169,8 @@ def make_session_factory(url: str):
     else:
         kw["pool_pre_ping"] = True
     engine = create_engine(url, **kw)
-    Base.metadata.create_all(engine)
+    if use_migrations:
+        migrate(engine)
+    else:
+        Base.metadata.create_all(engine)
     return sessionmaker(engine, expire_on_commit=False)

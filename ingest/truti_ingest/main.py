@@ -1,6 +1,7 @@
 """Ingest HTTP service: envelope endpoint + metrics + dashboard API."""
 import json
 import time
+import zlib
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI, Request
@@ -29,7 +30,7 @@ def _err(status, msg, details=None, headers=None):
 
 def create_app(settings: Settings | None = None, redis_client=None, session_factory=None) -> FastAPI:
     s = settings or Settings()
-    Session = session_factory or make_session_factory(s.database_url)
+    Session = session_factory or make_session_factory(s.database_url, use_migrations=True)
     r = redis_client or aioredis.Redis.from_url(s.redis_url, decode_responses=True)
     app = FastAPI(title="Truti ingest")
     app.add_middleware(CORSMiddleware, allow_origins=s.cors_origins.split(","), allow_methods=["*"],
@@ -79,7 +80,18 @@ def create_app(settings: Settings | None = None, redis_client=None, session_fact
         body = await request.body()
         if len(body) > s.max_body_bytes:
             return reject("too_large", 413, f"body exceeds {s.max_body_bytes} bytes")
-        # 3. parse + validate
+        # 3. decompress (bounded, so a tiny gzip bomb cannot expand past the size limit) + parse + validate
+        enc = request.headers.get("content-encoding", "").lower()
+        if enc == "gzip":
+            try:
+                d = zlib.decompressobj(wbits=31)
+                body = d.decompress(body, s.max_body_bytes + 1)
+            except zlib.error:
+                return reject("bad_gzip", 400, "body is not valid gzip")
+            if len(body) > s.max_body_bytes or d.unconsumed_tail:
+                return reject("too_large", 413, f"decompressed body exceeds {s.max_body_bytes} bytes")
+        elif enc not in ("", "identity"):
+            return reject("bad_encoding", 415, f"unsupported Content-Encoding {enc}")
         try:
             payload = json.loads(body)
         except ValueError:

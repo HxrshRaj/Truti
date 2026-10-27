@@ -20,6 +20,8 @@ services:
       - { key: REDIS_URL, fromService: { type: keyvalue, name: truti-redis, property: connectionString } }
       - { key: ADMIN_TOKEN, generateValue: true }
       - { key: CORS_ORIGINS, value: "*" }
+      - { key: ALLOW_REGISTRATION, value: "0" }   # first account becomes admin; then registration closes
+      - { key: RETENTION_DAYS, value: "30" }
 
   - type: worker
     name: truti-worker

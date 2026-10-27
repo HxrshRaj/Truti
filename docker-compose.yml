@@ -16,7 +16,10 @@ services:
     environment: &env
       DATABASE_URL: postgresql://truti:truti@postgres:5432/truti
       REDIS_URL: redis://redis:6379/0
-      ADMIN_TOKEN: dev-admin-token
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-dev-admin-token}
+      RATE_LIMIT_EPS: ${RATE_LIMIT_EPS:-200}
+      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-0}
+      RETENTION_DAYS: ${RETENTION_DAYS:-30}
     ports: ["8000:8000"]
     depends_on:
       postgres: { condition: service_healthy }

@@ -3,8 +3,9 @@
 *Truti* means "error" in Hindi. It is a small, honest version of what Sentry does: SDKs capture errors,
 an ingest service validates and queues them, a worker groups them into issues, and a web app shows them.
 
-**Status:** everything below runs locally via Docker Compose and passes its tests. It is **not deployed**:
-`render.yaml` is written but has never been applied (see [Limits](#limits-and-what-is-not-done)).
+**Status:** everything below runs locally via Docker Compose, passes its tests (102), and is exercised end to end
+by `scripts/e2e_smoke.py` and by a real browser error. It is **not deployed**: `render.yaml` is written but has
+never been applied (see [Limits](#limits-and-what-is-not-done)).
 
 ## Architecture
 
@@ -32,8 +33,9 @@ an ingest service validates and queues them, a worker groups them into issues, a
 |---|---|
 | `sdk-python/` | Python SDK: `init`, `capture_exception/message`, scopes, breadcrumbs, excepthook + threading hook, asyncio-safe, ASGI/FastAPI, Flask and `logging` integrations, secret scrubbing, batching background transport |
 | `sdk-js/` | TypeScript SDK for Node and browsers: `init`, `captureException`, `window.onerror`/`unhandledrejection`, Express middleware, same retry/flush behaviour |
-| `ingest/` | FastAPI ingest API, Redis Streams worker, Postgres models, dashboard API (`/api/0`), source-map symbolication, alert webhooks, Prometheus metrics, load test |
+| `ingest/` | FastAPI ingest API, Redis Streams worker, Postgres models, dashboard API (`/api/0`), accounts + project membership, source-map symbolication, webhook and email alerts, issue merge, retention, Alembic migrations, Prometheus metrics, load test |
 | `web/` | React + Vite dashboard: projects/DSN, issues list (sparkline, filters, search), issue detail (stack frames with source context, breadcrumbs, tags, release, user), alert rules |
+| `scripts/e2e_smoke.py` | End-to-end check against a running stack (also a CI job) |
 | `demo/` | Deliberately broken Python app and a minified browser bundle with a source map |
 | `docs/envelope.md` | The versioned envelope format |
 
@@ -49,16 +51,22 @@ TRUTI_DSN=<dsn> python demo/python_demo.py 2                       # sends real 
 Verified on this machine: the demo's four distinct bugs, run for two rounds, produced four issues in the
 API, with the repeated ones at count 2; the dashboard container serves on :8080 and proxies `/api`.
 
+Sign in at http://localhost:8080 (the first account you create becomes the admin; registration then closes
+unless `ALLOW_REGISTRATION=1`). `ADMIN_TOKEN` still works as a bootstrap credential for scripts.
+
 Tests (CI runs the same in `.github/workflows/ci.yml`; the workflow itself has not run on GitHub yet):
 
 ```bash
-cd sdk-python && pip install -e ".[test]" && pytest     # 27 tests
-cd ingest     && pip install -e ".[test]" && pytest     # 34 tests
+cd sdk-python && pip install -e ".[test]" && pytest     # 28 tests
+cd ingest     && pip install -e ".[test]" && pytest     # 51 tests
 cd sdk-js     && npm ci && npm test                     # 17 tests (vitest)
-cd web        && npm ci && npm test && npm run build    # 3 tests (vitest)
+cd web        && npm ci && npm test && npm run build    # 6 tests (vitest)
+docker compose up --build -d && python scripts/e2e_smoke.py   # end to end, 8 checks
 ```
 
-All 81 passed locally on the merged `main`.
+All 102 unit tests and the 8-check smoke test passed locally. I also drove the browser demo in a real
+browser against the stack: a `TypeError` thrown by the minified bundle arrived as an issue whose frames were
+symbolicated back to `app.ts` with original source lines, and the dashboard login and issue list rendered.
 
 ## How grouping works
 
@@ -82,8 +90,7 @@ minified frame, binary-searches the generated line's segments for the last one a
 (from `sourcesContent`). Maps are uploaded per project, release and minified file name
 (`POST /api/0/projects/{id}/releases/{release}/sourcemaps`, see `demo/upload_sourcemap.py`); events are
 symbolicated by the worker when stored, matched on release and file basename. Covered by tests with a
-hand-built map. The demo ships a minified browser bundle with a real map and an upload script, but I did
-not run that browser path end to end.
+hand-built map, and end to end with the demo's esbuild-minified bundle and its real map (see above).
 
 ## Reliability and limits of the pipeline
 
@@ -93,8 +100,18 @@ not run that browser path end to end.
 * Ingest: 401 bad key, 413 over `MAX_BODY_BYTES` (200 KB), 400 bad JSON, 422 schema errors with field
   paths, 429 + `Retry-After` per-project rate limit (fixed 1 s window, default 200 events/s), 503 +
   `Retry-After` when the stream is full, de-dup by event id (1 h window).
-* Worker: at-least-once delivery. Failed messages are retried via `XAUTOCLAIM` and dead-lettered after
-  3 deliveries.
+* Worker: at-least-once delivery, one database transaction per batch of up to 200 messages. If a batch fails
+  it is retried event by event so one bad event cannot block others; unparseable messages are dead-lettered
+  immediately and others after 3 deliveries; crashed consumers' messages are reclaimed via `XAUTOCLAIM`.
+  Alerts are delivered after commit, so a slow webhook or SMTP server never holds a transaction.
+* Retention: the worker deletes events older than `RETENTION_DAYS` (default 30) hourly, then issues left
+  with no events.
+* Ingest accepts `Content-Encoding: gzip` (the Python SDK gzips batches over 1 KB); decompression is capped,
+  so a small gzip bomb gets a 413.
+* Schema is managed by Alembic (`truti_ingest/migrations`); services migrate on boot under a Postgres
+  advisory lock, and a test asserts the migrations produce exactly the schema the models define.
+* Accounts: scrypt-hashed passwords, opaque session tokens (only their SHA-256 is stored), login throttling,
+  and per-project membership (owner/member). Non-members get 404 for a project's issues, rules and maps.
 * Metrics at `/metrics` (ingest) and `:9100/metrics` (worker): received, rejected by reason, queued,
   duplicates, processed, failed, request/processing latency, queue wait, queue length.
 
@@ -111,19 +128,21 @@ python loadtest.py --url http://ingest:8000 --project ID --key KEY \
 
 | run (20 s, 32 connections) | events accepted/s | p50 | p95 | p99 | not accepted |
 |---|---|---|---|---|---|
-| 1 event / envelope | 531 | 52 ms | 102 ms | 251 ms | 0 of 10,716 (0.00%) |
-| 10 events / envelope | 2,408 | 68 ms | 137 ms | 174 ms | 41,490 of 90,170 (46.0%), all HTTP 503 |
+| 1 event / envelope | 623 | 47 ms | 86 ms | 128 ms | 0 of 12,557 (0.00%) |
+| 10 events / envelope | 3,163 | 90 ms | 175 ms | 234 ms | 0 of 64,130 (0.00%) |
 
 What this says, honestly:
 
-* The HTTP path is not the bottleneck; **the single worker is**. It stores about 90-100 events/s
-  (roughly 10 ms per event, several round trips plus a commit each). With larger envelopes the stream
-  filled to its 100,000 cap and ingest correctly answered `503` + `Retry-After`. The SDKs retry 503, so
-  that is backpressure, not loss, but a client without retries would lose those events.
-* **No loss among accepted events:** 59,396 returned 202; once the queue drained, Postgres held exactly
-  59,396 distinct event ids, with 0 dead-lettered. Draining took about 6 minutes.
-* Latency is client-side and includes the load generator competing for the same CPUs. Not a capacity
-  claim for any real deployment. More workers would raise the drain rate; that was not measured.
+* **No loss, no backpressure.** All 76,687 accepted events were stored (76,687 distinct ids in Postgres),
+  0 dead-lettered, 0 rejected with 503.
+* **The worker was the bottleneck, and batching fixed most of it.** The first version committed once per
+  event and stored about 90-100 events/s; with that worker the same batch-10 run got 46% HTTP 503 once the
+  queue filled (details of that older run are in the loadtest README).
+  With one transaction per batch, a 40,080-event backlog drained in about 21 s (roughly 1,900 events/s,
+  10 s polling granularity).
+* The ingest HTTP path was **not** saturated: the load generator (Python/httpx, same machine) is the limit
+  at these rates, so the ceiling is unknown, not 3,163 events/s. Latency is client-side and includes that
+  contention. Not a capacity claim for any real deployment; a hosted Postgres will behave differently.
 
 ## Limits and what is not done
 
@@ -131,17 +150,17 @@ Compared with real Sentry, and as a project:
 
 * **Not deployed.** `render.yaml` (web, ingest, worker, Postgres, Redis, demo) has not been applied, so
   there are no live URLs and the free-tier behaviour is unknown. The GitHub Actions workflow has not
-  run yet.
-* No auth or multi-user model: one shared `ADMIN_TOKEN` guards the dashboard API; there are no
-  organisations, users or per-project permissions.
-* Tables are created on startup; no migrations. No data retention or event pruning.
-* Grouping is a fixed stack-hash heuristic: no merging or splitting of issues, no custom fingerprint
-  rules, no ML similarity.
-* Source maps for JavaScript only (no Python/native symbolication, no source map discovery via
-  `sourceMappingURL`, no artifact bundles, no minified-name fallback heuristics).
-* Alerts are webhooks only (new issue, spike per issue); no email, no per-environment rules, no
-  alert deduplication across rules.
-* No performance tracing, session replay, release health, or user feedback. Only Python and JS SDKs.
-* The optional AI summary was not built.
-* The ingest accepts only JSON envelopes (no gzip, no attachments), and the worker is one process per
-  container with per-event commits, which is the measured throughput limit above.
+  run yet. Email alerts were tested with a fake SMTP server only; no real mail server was used.
+* Auth is deliberately basic: email + password, no email verification, password reset, SSO or 2FA; the
+  login throttle is in-process (per replica); sessions last 14 days and there is no session list. Two roles only.
+* Grouping is a fixed stack-hash heuristic. You can merge issues by hand (the old fingerprint then aliases
+  to the survivor), but there is no un-merge, no custom fingerprint rules and no similarity grouping.
+* Source maps for JavaScript only, uploaded by file name + release (no `sourceMappingURL` discovery, no
+  debug ids, no artifact bundles). No symbolication for Python or native code.
+* Alerts: new-issue and per-issue spike only; webhook or email. No per-environment rules, no
+  escalation, no Slack/PagerDuty integrations. A new rule can take up to 5 s to be noticed by a worker.
+* No performance tracing, session replay, release health or user feedback. Only Python and JS SDKs; the
+  JS SDK does not gzip.
+* The optional AI summary was not built (it would need an API key and evaluation I could not run here).
+* Throughput beyond what is measured above is unknown, and scaling to several workers/replicas was not
+  measured (the code is built for it: consumer groups, advisory-locked migrations, idempotent inserts).

@@ -24,6 +24,9 @@ class FakeServer:
                 if delay:
                     time.sleep(delay)
                 if 200 <= status < 300:
+                    if self.headers.get("Content-Encoding") == "gzip":
+                        import gzip
+                        body = gzip.decompress(body)
                     outer.received.append((dict(self.headers), json.loads(body)))
                 self.send_response(status)
                 for k, v in headers.items():

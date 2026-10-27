@@ -17,22 +17,26 @@ docker run --rm --network trutiload_default -v "$PWD:/lt" python:3.11-slim sh -c
    --duration 20 --processes 8 --concurrency 4 --batch 1"
 ```
 
+**Current worker (one transaction per batch of up to 200 messages), 1 worker container:**
+
 | run (20 s, 32 connections) | requests/s | events accepted/s | p50 | p95 | p99 | not accepted |
 |---|---|---|---|---|---|---|
-| 1 event per envelope | 531 | 531 | 52 ms | 102 ms | 251 ms | 0 of 10,716 (0.00%) |
-| 10 events per envelope | 446 | 2,408 | 68 ms | 137 ms | 174 ms | 41,490 of 90,170 (46.0%), all HTTP 503 |
+| 1 event per envelope | 623 | 623 | 47 ms | 86 ms | 128 ms | 0 of 12,557 (0.00%) |
+| 10 events per envelope | 316 | 3,163 | 90 ms | 175 ms | 234 ms | 0 of 64,130 (0.00%) |
 
-Latency is client-side, per request, including the load generator's own CPU contention.
+All 76,687 accepted events were stored (76,687 distinct event ids in Postgres), 0 dead-lettered, no 503s.
+A 40,080-event backlog left over when the load stopped drained in about 21 s (about 1,900 events/s; polled
+every 10 s, so +/- 10 s). Raw output: `RESULTS.txt`.
+
+**Earlier worker (commit per event), same rig, kept for the comparison:** batch 1: 531 events/s, p95 102 ms,
+0 of 10,716 dropped. Batch 10: 2,408 events/s accepted but 46.0% (41,490 of 90,170) got HTTP 503 because one
+worker stored only about 90-100 events/s and the stream hit `STREAM_MAXLEN`. 59,396 accepted events were
+stored as exactly 59,396 distinct rows; draining took about 6 minutes.
 
 What the numbers mean:
 
-* **Zero loss for accepted events.** 59,396 events returned 202; after the queue drained,
-  Postgres held exactly 59,396 distinct event ids for that project, 0 dead-lettered.
-* **The worker is the bottleneck, not the HTTP path.** One worker process stores about 90-100
-  events/s (about 10 ms/event: several Postgres round trips plus a commit per event). In the batch-10 run
-  the stream hit `STREAM_MAXLEN` (100,000), so ingest returned `503` + `Retry-After: 5` for the rest.
-  That is the designed backpressure: the Python SDK retries 503, so those events are delayed, not lost,
-  but a client with no retry would lose them. It took about 6 minutes to drain the backlog.
-* Earlier runs with a single Python client process measured the *client* (about 40-170 req/s), not the
-  server, and are discarded. `localhost` also stalled on IPv6 fallback on Windows, so use `127.0.0.1`.
-* Not measured: multi-host deployment, Render's free tier, long soak runs.
+* The HTTP path was not saturated: the Python/httpx load generator on the same machine is the limit, so the
+  ceiling is unknown. Latency is client-side and includes that contention. Do not read these as capacity claims.
+* Earlier runs with a single client process measured the *client* (about 40-170 req/s), not the server, and
+  are discarded. `localhost` also stalled on IPv6 fallback on Windows, so use `127.0.0.1`.
+* Not measured: multiple workers, multi-host deployment, Render's free tier, long soak runs.

@@ -24,7 +24,7 @@ export function App() {
       setAuthError(null);
     } catch (e) {
       setProjects(null);
-      setAuthError(e instanceof ApiError && e.status === 401 ? "Invalid admin token." : `Cannot reach API: ${(e as Error).message}`);
+      setAuthError(e instanceof ApiError && e.status === 401 ? "Session expired or invalid; sign in again." : `Cannot reach API: ${(e as Error).message}`);
     }
   }, []);
   useEffect(() => { if (config.token) void load(); }, [load]);
@@ -48,7 +48,7 @@ export function App() {
           <a className={route.tab === "alerts" ? "on" : ""} href={`${base}/alerts`}>Alerts</a>
           <a className={route.tab === "setup" ? "on" : ""} href={`${base}/setup`}>Projects &amp; DSN</a>
         </nav>
-        <button className="link" onClick={() => { localStorage.removeItem("truti.token"); setProjects(null); setAuthError(""); }}>Sign out</button>
+        <button className="link" onClick={() => { void fetch(`${config.apiUrl}/api/0/auth/logout`, { method: "POST", headers: { Authorization: `Bearer ${config.token}` } }).catch(() => {}); config.clear(); setProjects(null); setAuthError(""); }}>Sign out</button>
       </header>
       <main>
         {route.tab === "setup" || !project ? (

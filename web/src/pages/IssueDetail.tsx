@@ -49,6 +49,15 @@ export function IssueDetailPage({ id, back }: { id: number; back: string }) {
         {["unresolved", "resolved", "ignored"].filter((s) => s !== issue.status).map((s) => (
           <button key={s} onClick={async () => setIssue({ ...issue, ...(await api.setStatus(id, s)) })}>Mark {s}</button>
         ))}
+        <form style={{ display: "inline-flex", gap: 4, marginLeft: 12 }} onSubmit={async (e) => {
+          e.preventDefault();
+          const into = Number(new FormData(e.currentTarget).get("into"));
+          if (!into || !confirm(`Merge this issue into #${into}? This cannot be undone.`)) return;
+          try { await api.mergeIssue(id, into); location.hash = `#/projects/${issue.project_id}/issues/${into}`; } catch (x) { alert((x as Error).message); }
+        }}>
+          <input name="into" type="number" min={1} placeholder="merge into issue #" style={{ width: 150 }} />
+          <button>Merge</button>
+        </form>
       </div>
 
       {ev && (

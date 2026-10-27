@@ -96,3 +96,31 @@ def test_metrics_endpoint(env):
     for name in ("truti_events_received_total", "truti_events_rejected_total", "truti_events_queued_total",
                  "truti_processing_seconds", "truti_queue_length"):
         assert name in text
+
+
+def _gz(obj):
+    import gzip, json
+    return gzip.compress(json.dumps(obj).encode())
+
+
+def test_gzip_envelope_accepted(env):
+    r = env.client.post(f"/api/{env.pid}/envelope/", content=_gz(envelope(make_event())),
+                        headers={"X-Truti-Auth": f"truti_key={env.key}", "Content-Encoding": "gzip"})
+    assert r.status_code == 202
+
+
+def test_gzip_bomb_rejected_413():
+    e = Env(max_body_bytes=2000)
+    body = _gz(envelope(make_event(message="a" * 500_000)))
+    assert len(body) < 2000  # small on the wire, huge when expanded
+    r = e.client.post(f"/api/{e.pid}/envelope/", content=body,
+                      headers={"X-Truti-Auth": f"truti_key={e.key}", "Content-Encoding": "gzip"})
+    assert r.status_code == 413
+
+
+def test_bad_gzip_and_unknown_encoding(env):
+    h = {"X-Truti-Auth": f"truti_key={env.key}"}
+    assert env.client.post(f"/api/{env.pid}/envelope/", content=b"not gzip",
+                           headers={**h, "Content-Encoding": "gzip"}).status_code == 400
+    assert env.client.post(f"/api/{env.pid}/envelope/", content=b"{}",
+                           headers={**h, "Content-Encoding": "br"}).status_code == 415

@@ -95,3 +95,12 @@ def test_unserialisable_data_does_not_kill_worker(init_sdk, server):
     truti.capture_message("b")
     assert truti.flush(3)
     assert len(server.events) == 2
+
+
+def test_large_batches_are_gzipped(server):
+    t = Transport(server.dsn, batch_size=50, base_delay=0.01)
+    for i in range(30):
+        t.enqueue({"event_id": f"{i:032x}", "message": "x" * 500})
+    assert t.flush(5)
+    assert len(server.events) == 30
+    assert any(h.get("Content-Encoding") == "gzip" for h, _ in server.received)
