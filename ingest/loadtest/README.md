@@ -33,7 +33,6 @@ What the numbers mean:
   the stream hit `STREAM_MAXLEN` (100,000), so ingest returned `503` + `Retry-After: 5` for the rest.
   That is the designed backpressure: the Python SDK retries 503, so those events are delayed, not lost,
   but a client with no retry would lose them. It took about 6 minutes to drain the backlog.
-* The first runs in this directory (`result-*.txt`) used one Python client process and measured the
-  *client* (about 40-170 req/s) rather than the server; they are kept only to show that. `localhost`
-  also stalled on IPv6 fallback on Windows, so use `127.0.0.1`.
+* Earlier runs with a single Python client process measured the *client* (about 40-170 req/s), not the
+  server, and are discarded. `localhost` also stalled on IPv6 fallback on Windows, so use `127.0.0.1`.
 * Not measured: multi-host deployment, Render's free tier, long soak runs.
