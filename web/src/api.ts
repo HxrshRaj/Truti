@@ -16,7 +16,7 @@ export interface TrutiEvent {
   tags?: Record<string, string>; user?: Record<string, unknown> | null; request?: Record<string, any> | null;
 }
 export interface IssueDetail extends Issue { latest_event: TrutiEvent | null }
-export interface Rule { id: number; kind: string; threshold: number; window_seconds: number; webhook_url: string; last_fired: string | null }
+export interface Rule { id: number; kind: string; channel: "webhook" | "email"; threshold: number; window_seconds: number; webhook_url: string; email_to: string | null; last_fired: string | null }
 export interface AlertEntry { id: number; rule_id: number; kind: string; issue_id: number; fired_at: string; delivered: boolean; detail: string }
 
 const LS_URL = "truti.apiUrl";
@@ -25,6 +25,7 @@ const LS_TOKEN = "truti.token";
 export const config = {
   get apiUrl() { return localStorage.getItem(LS_URL) ?? (import.meta.env.VITE_API_URL as string | undefined) ?? ""; },
   get token() { return localStorage.getItem(LS_TOKEN) ?? ""; },
+  clear() { localStorage.removeItem(LS_TOKEN); },
   save(apiUrl: string, token: string) {
     localStorage.setItem(LS_URL, apiUrl.replace(/\/+$/, ""));
     localStorage.setItem(LS_TOKEN, token);
@@ -62,8 +63,22 @@ export const api = {
   issueEvents: (id: number) => call<TrutiEvent[]>("GET", `/issues/${id}/events`),
   setStatus: (id: number, status: string) => call<Issue>("PATCH", `/issues/${id}`, { status }),
   rules: (pid: number) => call<Rule[]>("GET", `/projects/${pid}/alert-rules`),
-  createRule: (pid: number, r: { kind: string; webhook_url: string; threshold: number; window_seconds: number }) =>
+  createRule: (pid: number, r: { kind: string; channel: string; webhook_url: string; email_to?: string; threshold: number; window_seconds: number }) =>
     call<Rule>("POST", `/projects/${pid}/alert-rules`, r),
   deleteRule: (id: number) => call<void>("DELETE", `/alert-rules/${id}`),
+  mergeIssue: (id: number, into: number) => call<Issue>("POST", `/issues/${id}/merge`, { into }),
   alerts: (pid: number) => call<AlertEntry[]>("GET", `/projects/${pid}/alerts`),
 };
+
+/** Email/password sign-in. Returns the session token; the caller stores it with config.save. */
+export async function authenticate(apiUrl: string, mode: "login" | "register", email: string, password: string): Promise<string> {
+  const res = await fetch(`${apiUrl.replace(/\/+$/, "")}/api/0/auth/${mode}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password }),
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const d = j.detail;
+    throw new ApiError(res.status, typeof d === "string" ? d : Array.isArray(d) ? d.map((x: any) => x.msg).join("; ") : res.statusText);
+  }
+  return j.token as string;
+}

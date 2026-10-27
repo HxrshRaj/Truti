@@ -56,3 +56,16 @@ jobs:
         with: { node-version: 22 }
       - run: npm install
       - run: npm run build
+
+  e2e:
+    runs-on: ubuntu-latest
+    needs: [python-sdk, ingest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -e sdk-python
+      - run: docker compose up --build -d
+      - run: python scripts/e2e_smoke.py
+      - if: failure()
+        run: docker compose logs --tail=100
