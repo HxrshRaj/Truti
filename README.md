@@ -82,7 +82,8 @@ minified frame, binary-searches the generated line's segments for the last one a
 (from `sourcesContent`). Maps are uploaded per project, release and minified file name
 (`POST /api/0/projects/{id}/releases/{release}/sourcemaps`, see `demo/upload_sourcemap.py`); events are
 symbolicated by the worker when stored, matched on release and file basename. Covered by tests with a
-hand-built map; the demo's browser bundle exercises it with a real minifier output.
+hand-built map. The demo ships a minified browser bundle with a real map and an upload script, but I did
+not run that browser path end to end.
 
 ## Reliability and limits of the pipeline
 
