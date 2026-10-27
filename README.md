@@ -54,7 +54,7 @@ API, with the repeated ones at count 2; the dashboard container serves on :8080 
 Sign in at http://localhost:8080 (the first account you create becomes the admin; registration then closes
 unless `ALLOW_REGISTRATION=1`). `ADMIN_TOKEN` still works as a bootstrap credential for scripts.
 
-Tests (CI runs the same in `.github/workflows/ci.yml`; the workflow itself has not run on GitHub yet):
+Tests (CI runs the same in `.github/workflows/ci.yml`; all six jobs, including the compose-based e2e job, passed on GitHub for `main` at the time of writing):
 
 ```bash
 cd sdk-python && pip install -e ".[test]" && pytest     # 28 tests
@@ -149,8 +149,7 @@ What this says, honestly:
 Compared with real Sentry, and as a project:
 
 * **Not deployed.** `render.yaml` (web, ingest, worker, Postgres, Redis, demo) has not been applied, so
-  there are no live URLs and the free-tier behaviour is unknown. The GitHub Actions workflow has not
-  run yet. Email alerts were tested with a fake SMTP server only; no real mail server was used.
+  there are no live URLs and the free-tier behaviour is unknown. Email alerts were tested with a fake SMTP server only; no real mail server was used.
 * Auth is deliberately basic: email + password, no email verification, password reset, SSO or 2FA; the
   login throttle is in-process (per replica); sessions last 14 days and there is no session list. Two roles only.
 * Grouping is a fixed stack-hash heuristic. You can merge issues by hand (the old fingerprint then aliases
