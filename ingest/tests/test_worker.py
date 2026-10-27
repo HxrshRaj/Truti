@@ -6,7 +6,6 @@ from sqlalchemy import select
 from conftest import make_event
 from truti_ingest.db import AlertLog, Event, Issue, Release
 from truti_ingest.grouping import fingerprint, normalise_message
-from truti_ingest.worker import dead_letter
 
 
 def issues(env):
@@ -81,14 +80,64 @@ def test_redelivery_does_not_double_count(env):
 
 def test_poison_message_goes_to_dead_letter(env):
     env.sync_redis.xadd(env.settings.stream, {"project_id": "1", "received_at": "0", "data": "{not json"})
-    from truti_ingest.worker import run_once
-    # each run reads it once as new; later runs reclaim it via XAUTOCLAIM only after idle time,
-    # so drive dead-lettering directly the way run_once does after repeated failures.
-    run_once(env.sync_redis, env.settings, env.Session, "t1", block_ms=1)
-    (mid, fields), = env.sync_redis.xrange(env.settings.stream)
-    dead_letter(env.sync_redis, env.settings, mid, fields)
+    env.send(make_event())
+    env.drain()
     assert env.sync_redis.xlen(env.settings.dead_stream) == 1
     assert env.sync_redis.xpending(env.settings.stream, env.settings.group)["pending"] == 0
+    assert len(issues(env)) == 1  # the good event next to it was still stored
+
+
+def test_failed_batch_falls_back_to_per_event(env, monkeypatch):
+    from truti_ingest import processing
+    real = processing.process_batch
+    calls = {"n": 0}
+
+    def flaky(session, items):
+        calls["n"] += 1
+        raise RuntimeError("batch path broke")
+    monkeypatch.setattr("truti_ingest.worker.process_batch", flaky)
+    env.send(make_event(), make_event())
+    env.drain()
+    (i,) = issues(env)
+    assert calls["n"] >= 1 and i.count == 2
+    assert env.sync_redis.xpending(env.settings.stream, env.settings.group)["pending"] == 0
+
+
+def test_batch_counts_many_events_with_few_issues(env):
+    evs = [make_event() for _ in range(40)]
+    for i in range(0, 40, 10):
+        env.send(*evs[i:i + 10])
+    env.drain()
+    (i,) = issues(env)
+    assert i.count == 40
+    with env.Session() as s:
+        assert s.scalar(select(Release.event_count)) == 40
+        assert len(s.scalars(select(Event)).all()) == 40
+
+
+def test_duplicate_inside_one_batch_counted_once(env):
+    ev = make_event()
+    for _ in range(2):
+        env.sync_redis.xadd(env.settings.stream, {"project_id": env.pid, "received_at": "0", "data": json.dumps(ev)})
+    env.drain()
+    (i,) = issues(env)
+    assert i.count == 1
+
+
+def test_retention_prunes_old_events_and_empty_issues(env):
+    from truti_ingest.worker import prune
+    old = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=45)).isoformat()
+    stale = make_event(timestamp=old)
+    stale["exception"] = {"type": "OldError", "value": "x", "frames": [
+        {"filename": "old.py", "function": "f", "lineno": 1, "context_line": "x", "in_app": True}]}
+    env.send(stale, make_event())
+    env.drain()
+    assert len(issues(env)) == 2
+    assert prune(env.Session, 0) == (0, 0)  # disabled
+    ev, iss = prune(env.Session, 30)
+    assert (ev, iss) == (1, 1)
+    (left,) = issues(env)
+    assert left.title.startswith("ValueError")
 
 
 def test_new_issue_alert_webhook(env):
@@ -122,3 +171,37 @@ def test_failing_webhook_does_not_lose_event(env):
     (i,) = issues(env)
     assert i.count == 1
     assert env.api("GET", f"/projects/{env.pid}/alerts").json()[0]["delivered"] is False
+
+
+def test_email_alert_channel(env, monkeypatch):
+    sent = []
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout=None): sent.append(("connect", host, port))
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def starttls(self): sent.append("tls")
+        def login(self, u, p): sent.append(("login", u))
+        def send_message(self, msg): sent.append(("msg", msg["To"], msg["Subject"]))
+
+    monkeypatch.setenv("SMTP_HOST", "smtp.test")
+    monkeypatch.setenv("SMTP_USER", "me")
+    r = env.api("POST", f"/projects/{env.pid}/alert-rules", json={"kind": "new_issue", "channel": "email", "email_to": "a@b.co"})
+    assert r.status_code == 201 and r.json()["channel"] == "email"
+    assert env.api("POST", f"/projects/{env.pid}/alert-rules", json={"kind": "new_issue", "channel": "email"}).status_code == 422
+    assert env.api("POST", f"/projects/{env.pid}/alert-rules", json={"kind": "new_issue", "webhook_url": "ftp://x"}).status_code == 422
+    env.send(make_event())
+    from truti_ingest.worker import run_once
+    run_once(env.sync_redis, env.settings, env.Session, "t1", block_ms=1, smtp_factory=FakeSMTP)
+    assert ("msg", "a@b.co") == sent[-1][:2] and "new issue" in sent[-1][2]
+    assert env.api("GET", f"/projects/{env.pid}/alerts").json()[0]["detail"] == "sent"
+
+
+def test_email_alert_failure_is_logged_not_raised(env, monkeypatch):
+    monkeypatch.delenv("SMTP_HOST", raising=False)
+    env.api("POST", f"/projects/{env.pid}/alert-rules", json={"kind": "new_issue", "channel": "email", "email_to": "a@b.co"})
+    env.send(make_event())
+    env.drain()
+    assert issues(env)[0].count == 1
+    log = env.api("GET", f"/projects/{env.pid}/alerts").json()[0]
+    assert log["delivered"] is False and "SMTP_HOST" in log["detail"]

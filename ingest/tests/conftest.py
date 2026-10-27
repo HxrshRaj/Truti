@@ -32,6 +32,8 @@ def envelope(*events):
 
 class Env:
     def __init__(self, **settings):
+        from truti_ingest import alerts, processing
+        alerts.clear_cache(); processing._KNOWN_RELEASES.clear()
         self.settings = Settings(database_url="sqlite://", admin_token="test-admin", **settings)
         self.server = fakeredis.FakeServer()
         self.sync_redis = fakeredis.FakeRedis(server=self.server, decode_responses=True)

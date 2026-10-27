@@ -1,4 +1,5 @@
 """Background, batching, retrying transport. Nothing in here may raise into the host app."""
+import gzip
 import json
 import logging
 import queue
@@ -32,7 +33,8 @@ def parse_dsn(dsn):
 
 class Transport:
     def __init__(self, dsn, *, max_queue=100, batch_size=20, flush_interval=0.5, max_retries=5,
-                 base_delay=0.5, max_delay=30.0, timeout=5.0):
+                 base_delay=0.5, max_delay=30.0, timeout=5.0, gzip_min_bytes=1024):
+        self.gzip_min_bytes = gzip_min_bytes
         self.url, self.key = parse_dsn(dsn)
         self.batch_size = batch_size
         self.flush_interval = flush_interval
@@ -134,7 +136,11 @@ class Transport:
         return False
 
     def _post(self, body):
+        headers = {}
+        if len(body) > self.gzip_min_bytes:
+            body, headers = gzip.compress(body, 3), {"Content-Encoding": "gzip"}
         req = urllib.request.Request(self.url, data=body, method="POST", headers={
+            **headers,
             "Content-Type": "application/json",
             "X-Truti-Auth": f"truti_key={self.key}",
             "User-Agent": f"truti.python/{__version__}",
